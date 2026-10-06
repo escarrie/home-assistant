@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Healthy si une synchro est en cours (et pas bloquée) ou si la dernière synchro réussie est récente.
+set -eu
+
+DATA_DIR="${DATA_DIR:-/data}"
+MAILBOX_NAME="${MAILBOX_NAME:-}"
+SYNC_INTERVAL="${SYNC_INTERVAL:-300}"
+SYNC_TIMEOUT="${SYNC_TIMEOUT:-3600}"
+HEALTH_MAX_AGE="${HEALTH_MAX_AGE:-$(( SYNC_INTERVAL * 3 + 300 ))}"
+
+(( SYNC_INTERVAL == 0 )) && exit 0
+now=$(date +%s)
+
+running=/tmp/mailsync/running
+if [[ -s "$running" ]]; then
+  started=$(cat "$running")
+  if (( SYNC_TIMEOUT == 0 || now - started < SYNC_TIMEOUT + 60 )); then
+    exit 0
+  fi
+  echo "synchro en cours depuis $(( now - started ))s, probablement bloquée"
+  exit 1
+fi
+
+success="$DATA_DIR/$MAILBOX_NAME/.mailsync-last-success"
+if [[ ! -s "$success" ]]; then
+  echo "aucune synchro réussie pour l'instant"
+  exit 1
+fi
+
+age=$(( now - $(cat "$success") ))
+if (( age > HEALTH_MAX_AGE )); then
+  echo "dernière synchro réussie il y a ${age}s (max ${HEALTH_MAX_AGE}s)"
+  exit 1
+fi
+exit 0

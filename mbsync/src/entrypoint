@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# mailsync : copie locale d'UNE mailbox IMAP en Maildir via mbsync.
+# Le serveur n'est jamais modifié (Sync Pull, Remove None, Expunge None côté serveur).
+# Tout est piloté par variables d'environnement : un conteneur = une mailbox.
+set -euo pipefail
+
+RUNTIME_DIR=/tmp/mailsync
+CONF="$RUNTIME_DIR/mbsyncrc"
+RUN_CONF="$RUNTIME_DIR/mbsyncrc.run"
+RUNNING_MARK="$RUNTIME_DIR/running"
+
+log() { printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${MAILBOX_NAME:-mailsync}" "$*"; }
+die() { log "ERREUR: $*" >&2; exit 1; }
+is_true() { [[ "${1,,}" =~ ^(1|true|yes|on)$ ]]; }
+iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+
+# ---------- Paramètres ----------
+MAILBOX_NAME="${MAILBOX_NAME:-}"
+IMAP_HOST="${IMAP_HOST:-}"
+IMAP_PORT="${IMAP_PORT:-993}"
+IMAP_USER="${IMAP_USER:-}"
+IMAP_PASSWORD="${IMAP_PASSWORD:-}"
+IMAP_PASSWORD_FILE="${IMAP_PASSWORD_FILE:-}"
+IMAP_TLS="${IMAP_TLS:-imaps}"            # imaps | starttls | none
+IMAP_AUTH_MECHS="${IMAP_AUTH_MECHS:-}"   # ex: LOGIN, PLAIN (vide = auto)
+SYNC_PATTERNS="${SYNC_PATTERNS:-*}"      # syntaxe Patterns de mbsync
+SYNC_INTERVAL="${SYNC_INTERVAL:-300}"    # secondes, 0 = une seule passe puis sortie
+SYNC_TIMEOUT="${SYNC_TIMEOUT:-3600}"     # secondes par passe, 0 = illimité
+SYNC_MAX_SIZE="${SYNC_MAX_SIZE:-}"       # ex: 20m (ignore les mails plus gros)
+SYNC_BATCH_SIZE="${SYNC_BATCH_SIZE:-5000}"  # nouveaux mails max par dossier et par passe, 0 = illimité
+SYNC_BATCH_DELAY="${SYNC_BATCH_DELAY:-30}"  # secondes avant le lot suivant quand il en reste
+LOCAL_EXPUNGE="${LOCAL_EXPUNGE:-false}"  # true = supprime localement ce qui est supprimé sur le serveur
+DATA_DIR="${DATA_DIR:-/data}"
+PUID="${PUID:-1000}"
+PGID="${PGID:-1000}"
+VERBOSE="${VERBOSE:-false}"
+DRY_RUN="${DRY_RUN:-false}"              # true = affiche la config générée et sort
+
+MAIL_DIR="$DATA_DIR/$MAILBOX_NAME"
+STATUS_FILE="$MAIL_DIR/.mailsync-status.json"
+SUCCESS_FILE="$MAIL_DIR/.mailsync-last-success"
+PASS_FILE="${IMAP_PASSWORD_FILE:-$RUNTIME_DIR/password}"
+
+# ---------- Préparation (exécutée une fois, en root si possible) ----------
+validate() {
+  [[ -n "$MAILBOX_NAME" ]] || die "MAILBOX_NAME est requis"
+  [[ "$MAILBOX_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "MAILBOX_NAME : lettres, chiffres, '.', '_' et '-' uniquement"
+  [[ -n "$IMAP_HOST" ]] || die "IMAP_HOST est requis"
+  [[ -n "$IMAP_USER" ]] || die "IMAP_USER est requis"
+  [[ "$IMAP_HOST$IMAP_USER$PASS_FILE" != *[\"\'\\]* ]] || die "guillemets et antislashs interdits dans IMAP_HOST, IMAP_USER et IMAP_PASSWORD_FILE"
+  [[ "$IMAP_PORT" =~ ^[0-9]+$ ]] || die "IMAP_PORT doit être un nombre"
+  [[ "$SYNC_INTERVAL" =~ ^[0-9]+$ ]] || die "SYNC_INTERVAL doit être un nombre de secondes"
+  [[ "$SYNC_TIMEOUT" =~ ^[0-9]+$ ]] || die "SYNC_TIMEOUT doit être un nombre de secondes"
+  [[ "$SYNC_BATCH_SIZE" =~ ^[0-9]+$ ]] || die "SYNC_BATCH_SIZE doit être un nombre"
+  [[ "$SYNC_BATCH_DELAY" =~ ^[0-9]+$ ]] || die "SYNC_BATCH_DELAY doit être un nombre de secondes"
+  [[ -z "$SYNC_MAX_SIZE" || "$SYNC_MAX_SIZE" =~ ^[0-9]+[kKmM]?$ ]] || die "SYNC_MAX_SIZE invalide (ex: 500k, 20m)"
+
+  case "${IMAP_TLS,,}" in
+    imaps)    SSL_TYPE=IMAPS ;;
+    starttls) SSL_TYPE=STARTTLS ;;
+    none)     SSL_TYPE=None; log "ATTENTION : connexion IMAP non chiffrée" ;;
+    *)        die "IMAP_TLS doit valoir imaps, starttls ou none" ;;
+  esac
+
+  if [[ -n "$IMAP_PASSWORD_FILE" ]]; then
+    [[ -r "$IMAP_PASSWORD_FILE" ]] || die "IMAP_PASSWORD_FILE illisible : $IMAP_PASSWORD_FILE"
+  elif [[ -z "$IMAP_PASSWORD" ]] && ! is_true "$DRY_RUN"; then
+    die "IMAP_PASSWORD ou IMAP_PASSWORD_FILE est requis"
+  fi
+}
+
+write_config() {
+  local expunge=None
+  is_true "$LOCAL_EXPUNGE" && expunge=Near
+  {
+    printf 'IMAPAccount %s\n' "$MAILBOX_NAME"
+    printf 'Host "%s"\n' "$IMAP_HOST"
+    printf 'Port %s\n' "$IMAP_PORT"
+    printf 'User "%s"\n' "$IMAP_USER"
+    printf 'PassCmd "cat %s"\n' "$PASS_FILE"
+    printf 'SSLType %s\n' "$SSL_TYPE"
+    [[ "$SSL_TYPE" != None ]] && printf 'CertificateFile /etc/ssl/certs/ca-certificates.crt\n'
+    [[ -n "$IMAP_AUTH_MECHS" ]] && printf 'AuthMechs %s\n' "$IMAP_AUTH_MECHS"
+    printf 'Timeout 120\n\n'
+
+    printf 'IMAPStore %s-remote\nAccount %s\n\n' "$MAILBOX_NAME" "$MAILBOX_NAME"
+
+    printf 'MaildirStore %s-local\n' "$MAILBOX_NAME"
+    printf 'Path %s/\n' "$MAIL_DIR"
+    printf 'Inbox %s/INBOX\n' "$MAIL_DIR"
+    printf 'SubFolders Verbatim\n\n'
+
+    printf 'Channel %s\n' "$MAILBOX_NAME"
+    printf 'Far :%s-remote:\n' "$MAILBOX_NAME"
+    printf 'Near :%s-local:\n' "$MAILBOX_NAME"
+    printf 'Patterns %s\n' "$SYNC_PATTERNS"
+    printf 'Sync Pull\n'          # serveur -> local uniquement
+    printf 'Create Near\n'        # crée les dossiers en local seulement
+    printf 'Remove None\n'        # ne supprime jamais de dossier
+    printf 'Expunge %s\n' "$expunge"
+    printf 'SyncState *\n'        # état stocké dans chaque dossier Maildir (sur le volume)
+    printf 'CopyArrivalDate yes\n'
+    [[ -n "$SYNC_MAX_SIZE" ]] && printf 'MaxSize %s\n' "$SYNC_MAX_SIZE"
+    true
+  } > "$CONF"
+}
+
+prepare() {
+  umask 077
+  mkdir -p "$RUNTIME_DIR" "$MAIL_DIR"
+  if [[ -z "$IMAP_PASSWORD_FILE" && -n "$IMAP_PASSWORD" ]]; then
+    printf '%s' "$IMAP_PASSWORD" > "$PASS_FILE"
+  fi
+  write_config
+  if [[ "$(id -u)" == 0 ]]; then
+    chown -R "$PUID:$PGID" "$RUNTIME_DIR"
+    chown "$PUID:$PGID" "$MAIL_DIR"
+  fi
+}
+
+# ---------- Boucle de synchronisation (exécutée en utilisateur PUID:PGID) ----------
+CHILD_PID=""
+FAILURES=0
+BATCH_PENDING=false
+MBSYNC_FLAGS=()
+is_true "$VERBOSE" && MBSYNC_FLAGS+=(-V)
+
+on_stop() {
+  log "Arrêt demandé"
+  if [[ -n "$CHILD_PID" ]]; then
+    kill -TERM "$CHILD_PID" 2>/dev/null || true
+    wait "$CHILD_PID" 2>/dev/null || true
+  fi
+  rm -f "$RUNNING_MARK"
+  exit 0
+}
+
+write_status() {
+  local rc=$1 start=$2 end=$3 last_success=null tmp="$STATUS_FILE.tmp"
+  [[ -s "$SUCCESS_FILE" ]] && last_success="\"$(iso "$(cat "$SUCCESS_FILE")")\""
+  cat > "$tmp" <<EOF
+{
+  "mailbox": "$MAILBOX_NAME",
+  "account": "$IMAP_USER",
+  "host": "$IMAP_HOST",
+  "last_run_start": "$(iso "$start")",
+  "last_run_end": "$(iso "$end")",
+  "last_run_duration_s": $((end - start)),
+  "last_exit_code": $rc,
+  "last_success": $last_success,
+  "consecutive_failures": $FAILURES
+}
+EOF
+  mv "$tmp" "$STATUS_FILE"
+}
+
+# Plus grand nombre de mails présents en local dans un même dossier Maildir.
+max_local_count() {
+  local max=0 n d
+  while IFS= read -r -d '' d; do
+    n=$(find "$d" "${d%/cur}/new" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    (( n > max )) && max=$n
+  done < <(find "$MAIL_DIR" -type d -name cur -print0)
+  echo "$max"
+}
+
+# Config de la passe : config de base + MaxMessages pour ne tirer qu'un lot à la fois.
+# Les lignes ajoutées en fin de fichier s'appliquent au Channel (dernière section).
+# La limite reste toujours >= au nombre de mails locaux : rien n'est jamais expiré.
+write_run_config() {
+  local limit=$1
+  ( umask 077; { cat "$CONF"; (( limit > 0 )) && printf 'MaxMessages %s\nExpireUnread yes\n' "$limit"; true; } > "$RUN_CONF" )
+}
+
+sync_once() {
+  local start end rc=0 limit=0 before=0
+  start=$(date +%s)
+  echo "$start" > "$RUNNING_MARK"
+  if (( SYNC_BATCH_SIZE > 0 )); then
+    before=$(max_local_count)
+    limit=$(( before + SYNC_BATCH_SIZE ))
+  fi
+  write_run_config "$limit"
+  BATCH_PENDING=false
+  if (( limit > 0 )); then
+    log "Synchronisation en cours… (max ${SYNC_BATCH_SIZE} nouveaux mails par dossier)"
+  else
+    log "Synchronisation en cours…"
+  fi
+  timeout "$SYNC_TIMEOUT" mbsync "${MBSYNC_FLAGS[@]}" -c "$RUN_CONF" "$MAILBOX_NAME" &
+  CHILD_PID=$!
+  wait "$CHILD_PID" || rc=$?
+  CHILD_PID=""
+  rm -f "$RUNNING_MARK"
+  end=$(date +%s)
+
+  if (( rc == 0 )); then
+    FAILURES=0
+    echo "$end" > "$SUCCESS_FILE"
+    log "Synchronisation OK ($((end - start))s)"
+    # Un dossier a atteint la limite : il reste probablement des mails plus anciens à tirer.
+    if (( limit > 0 )) && (( $(max_local_count) >= limit )); then
+      BATCH_PENDING=true
+      log "Lot complet : il reste des mails à récupérer, lot suivant dans ${SYNC_BATCH_DELAY}s"
+    fi
+  else
+    FAILURES=$((FAILURES + 1))
+    (( rc == 124 )) && log "Délai dépassé (SYNC_TIMEOUT=${SYNC_TIMEOUT}s)"
+    log "Échec de la synchronisation (code $rc, échecs consécutifs : $FAILURES)"
+  fi
+  write_status "$rc" "$start" "$end"
+  return "$rc"
+}
+
+main_loop() {
+  umask 027
+  trap on_stop TERM INT
+  log "Démarrage : $IMAP_USER@$IMAP_HOST -> $MAIL_DIR (intervalle ${SYNC_INTERVAL}s)"
+  while true; do
+    if sync_once; then :; fi
+    if (( SYNC_INTERVAL == 0 )); then
+      (( FAILURES > 0 )) && exit 1
+      [[ "$BATCH_PENDING" == true ]] && continue   # une passe = tout récupérer, lot par lot
+      exit 0
+    fi
+    # Backoff en cas d'échecs répétés (évite de se faire bloquer pour trop de logins ratés)
+    local wait_s=$SYNC_INTERVAL max_wait=$(( SYNC_INTERVAL > 3600 ? SYNC_INTERVAL : 3600 ))
+    if (( FAILURES > 0 )); then
+      local shift_by=$(( FAILURES - 1 < 4 ? FAILURES - 1 : 4 ))
+      wait_s=$(( SYNC_INTERVAL << shift_by ))
+      (( wait_s > max_wait )) && wait_s=$max_wait
+    elif [[ "$BATCH_PENDING" == true ]]; then
+      wait_s=$SYNC_BATCH_DELAY
+    fi
+    log "Prochaine synchronisation dans ${wait_s}s"
+    sleep "$wait_s" &
+    CHILD_PID=$!
+    wait "$CHILD_PID" || true
+    CHILD_PID=""
+  done
+}
+
+# ---------- Point d'entrée ----------
+if [[ "${1:-}" == "__loop" ]]; then
+  main_loop
+fi
+
+validate
+prepare
+
+if is_true "$DRY_RUN"; then
+  log "DRY_RUN : configuration générée ($CONF)"
+  cat "$CONF"
+  exit 0
+fi
+
+unset IMAP_PASSWORD
+if [[ "$(id -u)" == 0 ]]; then
+  exec gosu "$PUID:$PGID" "$0" __loop
+else
+  exec "$0" __loop
+fi

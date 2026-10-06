@@ -1,0 +1,49 @@
+# Une mailbox = un service. Même image, paramètres différents.
+x-mailsync: &mailsync
+  build: .
+  image: mailsync:latest
+  restart: unless-stopped
+  
+  volumes:
+    - ./mail:/data            # chaque service écrit dans ./mail/<MAILBOX_NAME>/
+  tmpfs:
+    - /tmp                    # config + mot de passe en RAM, jamais sur le volume
+  environment: &mailsync-env
+    PUID: "501"               # `id -u` sur ton Mac
+    PGID: "20"                # `id -g` sur ton Mac
+    TZ: Europe/Brussels
+
+services:
+  mail-perso:
+    <<: *mailsync
+    env_file: ./env/.env.perso
+
+  mail-escarrie:
+    <<: *mailsync
+    env_file: ./env/.env.escarrie
+
+  
+  mail-pinggame:
+    <<: *mailsync
+    env_file: ./env/.env.pinggame
+
+  # Convertit en Markdown les mails déjà synchronisés, après chaque synchro réussie
+  # (surveille mail/<mailbox>/.mailsync-last-success).
+  mail2md:
+    build: ./mail2md
+    image: mail2md:latest
+    restart: unless-stopped
+    user: "501:20"            # mêmes PUID:PGID que les conteneurs mbsync
+    volumes:
+      - ./mail:/data/mail:ro
+      - ./markdown:/data/markdown
+    environment:
+      TZ: Europe/Brussels
+      POLL_INTERVAL: "15"
+
+  # mail-pro:
+  #   <<: *mailsync
+  #   env_file: ./env/pro.env
+  #   environment:
+  #     <<: *mailsync-env
+  #     SYNC_INTERVAL: "900"    # surcharge possible service par service
