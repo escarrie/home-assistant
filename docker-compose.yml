@@ -1,11 +1,11 @@
 # Une mailbox = un service. Même image, paramètres différents.
 x-mailsync: &mailsync
-  build: .
+  build: ./mbsync
   image: mailsync:latest
   restart: unless-stopped
   
   volumes:
-    - ./mail:/data            # chaque service écrit dans ./mail/<MAILBOX_NAME>/
+    - ./data/mbsync/mail:/data   # chaque service écrit dans ./data/mbsync/mail/<MAILBOX_NAME>/
   tmpfs:
     - /tmp                    # config + mot de passe en RAM, jamais sur le volume
   environment: &mailsync-env
@@ -16,34 +16,42 @@ x-mailsync: &mailsync
 services:
   mail-perso:
     <<: *mailsync
-    env_file: ./env/.env.perso
+    env_file: ./mbsync/env/.env.perso
 
   mail-escarrie:
     <<: *mailsync
-    env_file: ./env/.env.escarrie
+    env_file: ./mbsync/env/.env.escarrie
 
   
   mail-pinggame:
     <<: *mailsync
-    env_file: ./env/.env.pinggame
+    env_file: ./mbsync/env/.env.pinggame
+
+  # Microsoft 365 : OAuth2. Connexion initiale : docker compose run --rm mail-zenproject authorize
+  # mail-zenproject:
+  #   <<: *mailsync
+  #   env_file: ./mbsync/env/.env.zenproject
+  #   volumes:
+  #     - ./data/mbsync/mail:/data
+  #     - ./data/mbsync/oauth:/oauth   # refresh token, hors du volume lu par mail2md
 
   # Convertit en Markdown les mails déjà synchronisés, après chaque synchro réussie
-  # (surveille mail/<mailbox>/.mailsync-last-success).
+  # (surveille data/mbsync/mail/<mailbox>/.mailsync-last-success).
   mail2md:
-    build: ./mail2md
+    build: ./mbsync/mail2md
     image: mail2md:latest
     restart: unless-stopped
     user: "501:20"            # mêmes PUID:PGID que les conteneurs mbsync
     volumes:
-      - ./mail:/data/mail:ro
-      - ./markdown:/data/markdown
+      - ./data/mbsync/mail:/data/mail:ro
+      - ./data/mbsync/markdown:/data/markdown
     environment:
       TZ: Europe/Brussels
       POLL_INTERVAL: "15"
 
   # mail-pro:
   #   <<: *mailsync
-  #   env_file: ./env/pro.env
+  #   env_file: ./mbsync/env/pro.env
   #   environment:
   #     <<: *mailsync-env
   #     SYNC_INTERVAL: "900"    # surcharge possible service par service

@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# oauth2-token : jeton d'accès OAuth2 Microsoft 365 pour l'IMAP (XOAUTH2).
+#   oauth2-token authorize <fichier>  connexion initiale (device code), à faire une fois
+#   oauth2-token <fichier>            affiche un jeton d'accès valide (utilisé par PassCmd)
+# Le fichier JSON garde client_id, tenant, refresh_token et le jeton d'accès en cache.
+# Microsoft renouvelle le refresh_token à chaque usage : le fichier doit rester inscriptible.
+set -euo pipefail
+
+SCOPE="https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+
+die() { printf 'oauth2-token: %s\n' "$*" >&2; exit 1; }
+
+token_url() { printf 'https://login.microsoftonline.com/%s/oauth2/v2.0/token' "$1"; }
+
+# Enregistre la réponse du serveur de jetons dans le fichier (écriture atomique).
+save() {
+  local file=$1 client_id=$2 tenant=$3 resp=$4 old_refresh=${5:-} tmp
+  tmp=$(mktemp "$file.XXXXXX")
+  jq -n --arg c "$client_id" --arg t "$tenant" --arg old "$old_refresh" \
+        --argjson r "$resp" --argjson now "$(date +%s)" '{
+    client_id: $c,
+    tenant: $t,
+    refresh_token: ($r.refresh_token // $old),
+    access_token: $r.access_token,
+    expires_at: ($now + ($r.expires_in | tonumber) - 300)
+  }' > "$tmp"
+  mv "$tmp" "$file"
+}
+
+authorize() {
+  local file=$1 client_id=${OAUTH2_CLIENT_ID:-} tenant=${OAUTH2_TENANT:-organizations}
+  local resp device_code interval err
+  [[ -n "$client_id" ]] || die "OAUTH2_CLIENT_ID est requis"
+
+  resp=$(curl -sS "https://login.microsoftonline.com/$tenant/oauth2/v2.0/devicecode" \
+    --data-urlencode "client_id=$client_id" --data-urlencode "scope=$SCOPE")
+  device_code=$(jq -r '.device_code // empty' <<<"$resp")
+  [[ -n "$device_code" ]] || die "devicecode refusé : $(jq -r '.error_description // .' <<<"$resp")"
+  interval=$(jq -r '.interval // 5' <<<"$resp")
+  printf '\n%s\n\n' "$(jq -r .message <<<"$resp")"
+
+  while true; do
+    sleep "$interval"
+    resp=$(curl -sS "$(token_url "$tenant")" \
+      --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
+      --data-urlencode "client_id=$client_id" \
+      --data-urlencode "device_code=$device_code")
+    err=$(jq -r '.error // empty' <<<"$resp")
+    case "$err" in
+      "") break ;;
+      authorization_pending) ;;
+      slow_down) interval=$(( interval + 5 )) ;;
+      *) die "connexion refusée : $(jq -r '.error_description // .error' <<<"$resp")" ;;
+    esac
+  done
+
+  [[ -n "$(jq -r '.refresh_token // empty' <<<"$resp")" ]] || die "pas de refresh_token reçu (scope offline_access manquant ?)"
+  save "$file" "$client_id" "$tenant" "$resp"
+  echo "Connexion OK, jeton enregistré dans $file" >&2
+}
+
+access_token() {
+  local file=$1 client_id tenant refresh resp
+  [[ -r "$file" ]] || die "$file introuvable : lance d'abord l'autorisation (voir readme)"
+
+  if (( $(jq -r '.expires_at // 0' "$file") > $(date +%s) )); then
+    jq -j .access_token "$file"
+    return
+  fi
+
+  client_id=$(jq -r .client_id "$file")
+  tenant=$(jq -r .tenant "$file")
+  refresh=$(jq -r .refresh_token "$file")
+  resp=$(curl -sS "$(token_url "$tenant")" \
+    --data-urlencode "grant_type=refresh_token" \
+    --data-urlencode "client_id=$client_id" \
+    --data-urlencode "refresh_token=$refresh" \
+    --data-urlencode "scope=$SCOPE")
+  [[ -n "$(jq -r '.access_token // empty' <<<"$resp")" ]] \
+    || die "renouvellement refusé : $(jq -r '.error_description // .error // .' <<<"$resp")"
+  save "$file" "$client_id" "$tenant" "$resp" "$refresh"
+  jq -j .access_token "$file"
+}
+
+umask 077
+case "${1:-}" in
+  authorize) [[ -n "${2:-}" ]] || die "usage : oauth2-token authorize <fichier>"; authorize "$2" ;;
+  "")        die "usage : oauth2-token [authorize] <fichier>" ;;
+  *)         access_token "$1" ;;
+esac

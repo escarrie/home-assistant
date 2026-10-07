@@ -23,6 +23,7 @@ IMAP_PASSWORD="${IMAP_PASSWORD:-}"
 IMAP_PASSWORD_FILE="${IMAP_PASSWORD_FILE:-}"
 IMAP_TLS="${IMAP_TLS:-imaps}"            # imaps | starttls | none
 IMAP_AUTH_MECHS="${IMAP_AUTH_MECHS:-}"   # ex: LOGIN, PLAIN (vide = auto)
+IMAP_AUTH="${IMAP_AUTH:-password}"       # password | oauth2 (Microsoft 365, XOAUTH2)
 SYNC_PATTERNS="${SYNC_PATTERNS:-*}"      # syntaxe Patterns de mbsync
 SYNC_INTERVAL="${SYNC_INTERVAL:-300}"    # secondes, 0 = une seule passe puis sortie
 SYNC_TIMEOUT="${SYNC_TIMEOUT:-3600}"     # secondes par passe, 0 = illimité
@@ -40,6 +41,7 @@ MAIL_DIR="$DATA_DIR/$MAILBOX_NAME"
 STATUS_FILE="$MAIL_DIR/.mailsync-status.json"
 SUCCESS_FILE="$MAIL_DIR/.mailsync-last-success"
 PASS_FILE="${IMAP_PASSWORD_FILE:-$RUNTIME_DIR/password}"
+OAUTH2_TOKEN_FILE="${OAUTH2_TOKEN_FILE:-/oauth/$MAILBOX_NAME.json}"
 
 # ---------- Préparation (exécutée une fois, en root si possible) ----------
 validate() {
@@ -47,7 +49,7 @@ validate() {
   [[ "$MAILBOX_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "MAILBOX_NAME : lettres, chiffres, '.', '_' et '-' uniquement"
   [[ -n "$IMAP_HOST" ]] || die "IMAP_HOST est requis"
   [[ -n "$IMAP_USER" ]] || die "IMAP_USER est requis"
-  [[ "$IMAP_HOST$IMAP_USER$PASS_FILE" != *[\"\'\\]* ]] || die "guillemets et antislashs interdits dans IMAP_HOST, IMAP_USER et IMAP_PASSWORD_FILE"
+  [[ "$IMAP_HOST$IMAP_USER$PASS_FILE$OAUTH2_TOKEN_FILE" != *[\"\'\\\ ]* ]] || die "guillemets, antislashs et espaces interdits dans IMAP_HOST, IMAP_USER, IMAP_PASSWORD_FILE et OAUTH2_TOKEN_FILE"
   [[ "$IMAP_PORT" =~ ^[0-9]+$ ]] || die "IMAP_PORT doit être un nombre"
   [[ "$SYNC_INTERVAL" =~ ^[0-9]+$ ]] || die "SYNC_INTERVAL doit être un nombre de secondes"
   [[ "$SYNC_TIMEOUT" =~ ^[0-9]+$ ]] || die "SYNC_TIMEOUT doit être un nombre de secondes"
@@ -60,6 +62,12 @@ validate() {
     starttls) SSL_TYPE=STARTTLS ;;
     none)     SSL_TYPE=None; log "ATTENTION : connexion IMAP non chiffrée" ;;
     *)        die "IMAP_TLS doit valoir imaps, starttls ou none" ;;
+  esac
+
+  case "${IMAP_AUTH,,}" in
+    password) [[ -n "$IMAP_AUTH_MECHS" ]] || IMAP_AUTH_MECHS="PLAIN LOGIN" ;;  # jamais XOAUTH2 avec un mot de passe
+    oauth2)   [[ -n "$IMAP_AUTH_MECHS" ]] || IMAP_AUTH_MECHS=XOAUTH2; return ;;
+    *)        die "IMAP_AUTH doit valoir password ou oauth2" ;;
   esac
 
   if [[ -n "$IMAP_PASSWORD_FILE" ]]; then
@@ -77,7 +85,11 @@ write_config() {
     printf 'Host "%s"\n' "$IMAP_HOST"
     printf 'Port %s\n' "$IMAP_PORT"
     printf 'User "%s"\n' "$IMAP_USER"
-    printf 'PassCmd "cat %s"\n' "$PASS_FILE"
+    if [[ "${IMAP_AUTH,,}" == oauth2 ]]; then
+      printf 'PassCmd "/usr/local/bin/oauth2-token %s"\n' "$OAUTH2_TOKEN_FILE"
+    else
+      printf 'PassCmd "cat %s"\n' "$PASS_FILE"
+    fi
     printf 'SSLType %s\n' "$SSL_TYPE"
     [[ "$SSL_TYPE" != None ]] && printf 'CertificateFile /etc/ssl/certs/ca-certificates.crt\n'
     [[ -n "$IMAP_AUTH_MECHS" ]] && printf 'AuthMechs %s\n' "$IMAP_AUTH_MECHS"
@@ -112,10 +124,16 @@ prepare() {
     printf '%s' "$IMAP_PASSWORD" > "$PASS_FILE"
   fi
   write_config
+  [[ "${IMAP_AUTH,,}" == oauth2 ]] && mkdir -p "$(dirname "$OAUTH2_TOKEN_FILE")"
   if [[ "$(id -u)" == 0 ]]; then
     chown -R "$PUID:$PGID" "$RUNTIME_DIR"
     chown "$PUID:$PGID" "$MAIL_DIR"
+    if [[ "${IMAP_AUTH,,}" == oauth2 ]]; then
+      chown "$PUID:$PGID" "$(dirname "$OAUTH2_TOKEN_FILE")"
+      [[ -e "$OAUTH2_TOKEN_FILE" ]] && chown "$PUID:$PGID" "$OAUTH2_TOKEN_FILE"
+    fi
   fi
+  true
 }
 
 # ---------- Boucle de synchronisation (exécutée en utilisateur PUID:PGID) ----------
@@ -245,8 +263,19 @@ if [[ "${1:-}" == "__loop" ]]; then
   main_loop
 fi
 
+# Exécute une commande en utilisateur PUID:PGID (remplace le process courant).
+as_user() {
+  if [[ "$(id -u)" == 0 ]]; then exec gosu "$PUID:$PGID" "$@"; else exec "$@"; fi
+}
+
 validate
 prepare
+
+# Connexion OAuth2 initiale : docker compose run --rm <service> authorize
+if [[ "${1:-}" == "authorize" ]]; then
+  [[ "${IMAP_AUTH,,}" == oauth2 ]] || die "authorize nécessite IMAP_AUTH=oauth2"
+  as_user /usr/local/bin/oauth2-token authorize "$OAUTH2_TOKEN_FILE"
+fi
 
 if is_true "$DRY_RUN"; then
   log "DRY_RUN : configuration générée ($CONF)"
@@ -254,9 +283,9 @@ if is_true "$DRY_RUN"; then
   exit 0
 fi
 
-unset IMAP_PASSWORD
-if [[ "$(id -u)" == 0 ]]; then
-  exec gosu "$PUID:$PGID" "$0" __loop
-else
-  exec "$0" __loop
+if [[ "${IMAP_AUTH,,}" == oauth2 && ! -s "$OAUTH2_TOKEN_FILE" ]]; then
+  die "$OAUTH2_TOKEN_FILE absent : lance d'abord « docker compose run --rm <service> authorize »"
 fi
+
+unset IMAP_PASSWORD
+as_user "$0" __loop

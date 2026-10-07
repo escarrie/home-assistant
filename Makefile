@@ -50,7 +50,15 @@ build:
 start:
 	docker compose up -d
 
+## ▶️ Start the services in attach mode
+start-attach:
+	docker compose up
+
 ## ▶️ Start the services in detached mode without using cache
 start-no-cache:
 	docker compose build --no-cache
 	docker compose up -d
+
+## 🛑 Stop the services
+stop:
+	docker compose down

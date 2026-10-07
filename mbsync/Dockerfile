@@ -1,13 +1,15 @@
 FROM debian:bookworm-slim
 
-# isync fournit mbsync (1.4.x sur bookworm) ; libsasl2-modules apporte PLAIN/LOGIN.
+# isync fournit mbsync (1.4.x sur bookworm) ; libsasl2-modules apporte PLAIN/LOGIN,
+# libsasl2-modules-kdexoauth2 apporte XOAUTH2 (Microsoft 365), curl + jq servent à oauth2-token.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      isync libsasl2-modules ca-certificates tini gosu tzdata \
+      isync libsasl2-modules libsasl2-modules-kdexoauth2 curl jq \
+      ca-certificates tini gosu tzdata \
  && rm -rf /var/lib/apt/lists/*
 
-COPY src/entrypoint src/healthcheck /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/entrypoint /usr/local/bin/healthcheck
+COPY src/entrypoint src/healthcheck src/oauth2-token /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/entrypoint /usr/local/bin/healthcheck /usr/local/bin/oauth2-token
 
 ENV DATA_DIR=/data \
     TZ=Europe/Brussels
