@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Généré par scripts/install.sh dans ~/Library/LaunchAgents/. Ne pas éditer la copie installée. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.escarrie.inbound-cleanup</string>
+
+  <!-- Supprime les fichiers reçus par OpenClaw de plus de 24 h -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO_DIR__/scripts/cleanup-inbound.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>INBOUND_RETENTION_HOURS</key>
+    <string>24</string>
+    <key>VAULT_DIR</key>
+    <string>__VAULT_DIR__</string>
+  </dict>
+
+  <!-- Toutes les heures, et une fois au chargement -->
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/inbound-cleanup.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/inbound-cleanup.log</string>
+</dict>
+</plist>

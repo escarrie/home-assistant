@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "obsidian-vault": {
+      "command": "./scripts/mcp-vault.sh",
+      "args": []
+    }
+  }
+}

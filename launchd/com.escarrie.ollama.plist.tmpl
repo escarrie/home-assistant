@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Généré par scripts/install.sh dans ~/Library/LaunchAgents/. Ne pas éditer la copie installée. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.escarrie.ollama</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__OLLAMA_BIN__</string>
+    <string>serve</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Écoute locale uniquement -->
+    <key>OLLAMA_HOST</key>
+    <string>127.0.0.1:11434</string>
+    <!-- Décharge le modèle 5 min après la dernière requête : 0 Go au repos -->
+    <key>OLLAMA_KEEP_ALIVE</key>
+    <string>__OLLAMA_KEEP_ALIVE__</string>
+    <!-- LLM + modèle d'embeddings (~0,6 Go) : pas plus de deux modèles chargés -->
+    <key>OLLAMA_MAX_LOADED_MODELS</key>
+    <string>2</string>
+    <!-- Requêtes traitées en parallèle sur le modèle chargé -->
+    <key>OLLAMA_NUM_PARALLEL</key>
+    <string>__OLLAMA_NUM_PARALLEL__</string>
+    <!-- KV cache quantifié : ~2x moins de mémoire pour le contexte -->
+    <key>OLLAMA_FLASH_ATTENTION</key>
+    <string>1</string>
+    <key>OLLAMA_KV_CACHE_TYPE</key>
+    <string>q8_0</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/ollama.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/ollama.log</string>
+</dict>
+</plist>

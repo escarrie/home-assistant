@@ -1,0 +1,98 @@
+// Configuration OpenClaw du projet (JSON5).
+// scripts/install.sh la copie dans ~/.openclaw/openclaw.json en remplaçant
+// __REPO_DIR__, __VAULT_DIR__, __OLLAMA_MODEL__ et __EMBED_MODEL__ (seulement si ce fichier
+// n'existe pas, ou avec --update-openclaw-config).
+// Les ${VARIABLES} sont lues dans ~/.openclaw/.env (lien vers openclaw/.env).
+// Doc : https://docs.openclaw.ai/gateway/configuration-reference
+{
+  // LLM 100 % local via l'API native d'Ollama (pas /v1 : ça casse le tool-calling).
+  models: {
+    providers: {
+      ollama: {
+        apiKey: "ollama-local",
+        baseUrl: "http://127.0.0.1:11434",
+        api: "ollama",
+        timeoutSeconds: 300, // marge pour un chargement à froid
+        models: [
+          {
+            id: "__OLLAMA_MODEL__",
+            name: "__OLLAMA_MODEL__",
+            contextTokens: 32768,
+            params: {
+              num_ctx: 32768,     // borne la mémoire du KV cache (~1,5 Go en q8_0)
+              keep_alive: "5m",   // déchargé 5 min après le dernier message
+              temperature: 0.3,
+              think: false,       // qwen3 : pas de raisonnement interne dans les réponses
+            },
+          },
+        ],
+      },
+    },
+  },
+
+  agents: {
+    defaults: {
+      model: "ollama/__OLLAMA_MODEL__",
+      // L'espace de travail de l'agent EST le vault Obsidian.
+      workspace: "__VAULT_DIR__",
+      // Pas de sondage périodique : il s'insère dans la conversation Telegram (réponses
+      // NO_REPLY à la place des vraies réponses) et recharge le LLM sans raison.
+      heartbeat: { every: "0m" },
+    },
+  },
+
+  // Mémoire : embeddings locaux via Ollama, et indexation des notes du vault
+  // (pas seulement memory/*.md) pour que memory_search retrouve les captures.
+  memory: {
+    search: {
+      provider: "ollama",
+      model: "__EMBED_MODEL__",
+      extraPaths: ["__VAULT_DIR__/Notes", "__VAULT_DIR__/00-Inbox", "__VAULT_DIR__/Journal"],
+    },
+  },
+
+  // Fichiers reçus (vocaux, images, documents) : supprimés 24 h après réception.
+  // Complété par scripts/cleanup-inbound.sh pour les copies placées dans le vault.
+  attachments: { ttlHours: 24 },
+
+  // Ton compte Telegram est le propriétaire du bot.
+  commands: {
+    ownerAllowFrom: ["telegram:${TELEGRAM_ALLOWED_USER_ID}"],
+  },
+
+  channels: {
+    telegram: {
+      enabled: true,
+      botToken: "${TELEGRAM_BOT_TOKEN}",
+      // Seul ton compte peut parler au bot ; les autres sont ignorés.
+      dmPolicy: "allowlist",
+      allowFrom: ["${TELEGRAM_ALLOWED_USER_ID}"],
+      groupPolicy: "allowlist", // sans entrée `groups` : tous les groupes sont bloqués
+    },
+  },
+
+  tools: {
+    // Fichiers + mémoire, sans shell, sans web, sans navigateur.
+    profile: "coding",
+    deny: ["group:runtime", "group:web", "group:ui", "group:nodes", "group:automation"],
+    // Outils exposés directement. Avec la « recherche d'outils » (activée d'office pour
+    // Ollama), le modèle ne voit que tool_search/tool_call, absents du profil : il n'avait
+    // alors aucun outil et inventait les notes créées.
+    toolSearch: false,
+
+    // Vocaux : transcription locale par whisper.cpp (+ préchargement du LLM).
+    media: {
+      models: [
+        {
+          type: "cli",
+          command: "__REPO_DIR__/scripts/transcribe.sh",
+          args: ["{{AttachmentPath}}"],
+          timeoutSeconds: 300,
+          capabilities: ["audio"],
+        },
+      ],
+      audio: { enabled: true, echoTranscript: false },
+      concurrency: 2,
+    },
+  },
+}
