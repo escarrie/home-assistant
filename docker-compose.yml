@@ -48,6 +48,15 @@ services:
     environment:
       TZ: Europe/Brussels
       POLL_INTERVAL: "15"
+      # Envoi des nouveaux mails à OpenClaw (webhook de la gateway sur le Mac).
+      OPENCLAW_HOOK_URL: http://host.docker.internal:18789/hooks
+      PUSH_FOLDERS: INBOX
+    # Token du webhook + Telegram, générés par `make install` (absent = envoi désactivé).
+    env_file:
+      - path: ./mbsync/env/.env.mail2md
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # mail-pro:
   #   <<: *mailsync

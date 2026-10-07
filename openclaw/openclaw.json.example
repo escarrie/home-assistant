@@ -47,13 +47,23 @@
     search: {
       provider: "ollama",
       model: "__EMBED_MODEL__",
-      extraPaths: ["__VAULT_DIR__/Notes", "__VAULT_DIR__/00-Inbox", "__VAULT_DIR__/Journal"],
+      extraPaths: ["__VAULT_DIR__/Notes", "__VAULT_DIR__/00-Inbox", "__VAULT_DIR__/Journal", "__VAULT_DIR__/Mails"],
     },
   },
 
   // Fichiers reçus (vocaux, images, documents) : supprimés 24 h après réception.
   // Complété par scripts/cleanup-inbound.sh pour les copies placées dans le vault.
   attachments: { ttlHours: 24 },
+
+  // Webhook local : mail2md (docker compose) y envoie chaque nouveau mail, un par un
+  // (POST /hooks/agent). Le contenu reçu est traité comme une donnée non fiable.
+  hooks: {
+    enabled: true,
+    token: "${OPENCLAW_HOOKS_TOKEN}", // généré par scripts/install.sh, partagé avec mail2md
+    path: "/hooks",
+    allowedAgentIds: ["main"],
+    allowRequestSessionKey: false,
+  },
 
   // Ton compte Telegram est le propriétaire du bot.
   commands: {

@@ -6,7 +6,7 @@
 	start-openclaw stop-openclaw restart-openclaw \
 	start-mail stop-mail restart-mail \
 	status logs-ollama logs-openclaw logs-mail \
-	build rebuild cleanup-inbound cleanup-inbound-dry transcribe-test
+	build rebuild sync-mails cleanup-inbound cleanup-inbound-dry transcribe-test
 
 ## 🎨 Colors
 COLOR_RESET   = \033[0m
@@ -171,6 +171,13 @@ rebuild:
 	docker compose build --no-cache
 
 ## [Tools]
+## 📨 Send saved mails to OpenClaw one by one, Telegram progress (MAILBOX= FOLDERS=INBOX SINCE=AAAA-MM-JJ LIMIT= EVERY=25)
+sync-mails:
+	docker compose run --rm \
+		-e SYNC_MAILBOX="$(MAILBOX)" -e SYNC_FOLDERS="$(FOLDERS)" -e SYNC_SINCE="$(SINCE)" \
+		-e SYNC_LIMIT="$(LIMIT)" -e SYNC_NOTIFY_EVERY="$(EVERY)" \
+		mail2md python /app/mail2md.py sync
+
 ## 🧽 Delete received files (voice notes, images…) older than 24 h now
 cleanup-inbound:
 	./scripts/cleanup-inbound.sh

@@ -197,7 +197,7 @@ fi
 
 # ---------- 5. Vault Obsidian ----------
 step "Vault Obsidian"
-mkdir -p "$VAULT_DIR"/{00-Inbox,Notes,Journal,Attachments/audio}
+mkdir -p "$VAULT_DIR"/{00-Inbox,Notes,Journal,Mails,Attachments/audio}
 VAULT_DIR="$(cd "$VAULT_DIR" && pwd)"
 if [[ ! -f "$VAULT_DIR/AGENTS.md" ]]; then
   cp "$REPO_DIR/openclaw/workspace/AGENTS.md" "$VAULT_DIR/AGENTS.md"
@@ -247,6 +247,29 @@ if [[ ! -f "$ENV_FILE" ]]; then
   chmod 600 "$ENV_FILE"
   warn "openclaw/.env créé depuis l'exemple : à remplir (token BotFather + ID Telegram)"
 fi
+
+# Token du webhook (mail2md -> OpenClaw) : généré une fois dans openclaw/.env, puis recopié
+# avec les identifiants Telegram dans l'env du conteneur mail2md.
+if [[ -z "$(env_value OPENCLAW_HOOKS_TOKEN)" ]]; then
+  hooks_token="$(openssl rand -hex 32)"
+  if grep -qE '^OPENCLAW_HOOKS_TOKEN=' "$ENV_FILE"; then
+    sed -i '' -E "s|^OPENCLAW_HOOKS_TOKEN=.*|OPENCLAW_HOOKS_TOKEN=$hooks_token|" "$ENV_FILE"
+  else
+    printf '\nOPENCLAW_HOOKS_TOKEN=%s\n' "$hooks_token" >> "$ENV_FILE"
+  fi
+  ok "token du webhook OpenClaw généré (openclaw/.env)"
+fi
+MAIL2MD_ENV="$REPO_DIR/mbsync/env/.env.mail2md"
+(
+  umask 077
+  cat > "$MAIL2MD_ENV" <<EOF
+# Généré par scripts/install.sh depuis openclaw/.env : ne pas modifier à la main.
+OPENCLAW_HOOKS_TOKEN=$(env_value OPENCLAW_HOOKS_TOKEN)
+TELEGRAM_BOT_TOKEN=$(env_value TELEGRAM_BOT_TOKEN)
+TELEGRAM_ALLOWED_USER_ID=$(env_value TELEGRAM_ALLOWED_USER_ID)
+EOF
+)
+ok "mbsync/env/.env.mail2md à jour (relance make restart-mail pour l'appliquer)"
 
 mkdir -p "$OPENCLAW_DIR"
 chmod 700 "$OPENCLAW_DIR"

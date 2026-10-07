@@ -185,6 +185,27 @@ make restart-openclaw
 make transcribe-test FILE=vocal.ogg
 ```
 
+## Mails → OpenClaw
+
+`mail2md` envoie chaque **nouveau** mail de la boîte de réception (`PUSH_FOLDERS`, `INBOX` par défaut) à OpenClaw, un par un, via le webhook local de la gateway (`POST /hooks/agent`, token `OPENCLAW_HOOKS_TOKEN`). Le message commence par `[Mail entrant]` : l'agent le classe comme un mail (voir `AGENTS.md`), puis :
+
+- newsletter, pub ou notification automatique : rien n'est créé ;
+- sinon : une fiche résumée dans `Mails/` (résumé, tâches, liens) ;
+- mail important (réponse ou action attendue, échéance, facture…) : une ligne sur Telegram.
+
+Les mails déjà présents lors de la mise en service ne sont **pas** envoyés automatiquement (date de départ dans `data/mbsync/markdown/<boîte>/.mail2md-push.json`, avec la file d'attente). Si la gateway est arrêtée, les mails attendent et partent au tour suivant.
+
+Mise en service : `make install` (génère le token et `mbsync/env/.env.mail2md`), `make openclaw-update-config` (webhook + `AGENTS.md`), puis `make build && make restart-mail`.
+
+### Envoyer les anciens mails
+
+```bash
+make sync-mails                                   # tout le stock INBOX, toutes les boîtes
+make sync-mails MAILBOX=escarrie_contact SINCE=2026-01-01 LIMIT=100 EVERY=10
+```
+
+Les mails sont envoyés un par un (≈ 30 à 60 s chacun avec le LLM local), sans alerte « important ». Le suivi arrive sur Telegram : nombre de mails à traiter, progression tous les `EVERY` mails, puis « Queue terminée ». La synchro est reprenable : après un Ctrl-C ou une erreur, relance la même commande (mails déjà envoyés listés dans `.mail2md-sync.json`).
+
 ## Sécurité
 
 - **Liste blanche** : `dmPolicy: "allowlist"` avec ton seul ID Telegram. Les groupes sont bloqués.
