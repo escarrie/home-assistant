@@ -10,6 +10,7 @@ Si OPENCLAW_HOOK_URL est défini, chaque nouveau mail des dossiers PUSH_FOLDERS 
 sont pas envoyés : `mail2md.py sync` (make sync-mails) les rattrape à la demande, avec un suivi
 de progression sur Telegram.
 """
+import calendar
 import email
 import email.policy
 import email.utils
@@ -468,8 +469,17 @@ def fmt_duration(seconds):
     return f"{seconds // 3600} h {seconds % 3600 // 60:02d}"
 
 
+def months_ago(n):
+    """Maintenant moins n mois calendaires (31 mars - 1 mois = dernier jour de février)."""
+    now = datetime.now().astimezone()
+    year, month = divmod(now.year * 12 + now.month - 1 - n, 12)
+    day = min(now.day, calendar.monthrange(year, month + 1)[1])
+    return now.replace(year=year, month=month + 1, day=day)
+
+
 def sync_queue(mailboxes, folders, since_min):
-    """Anciens mails à envoyer : antérieurs au `since` de l'envoi live, pas encore synchronisés."""
+    """Anciens mails à envoyer, du plus récent au plus ancien : antérieurs au `since` de l'envoi
+    live et pas encore synchronisés. Les mails sans date passent en dernier."""
     queue = []
     for mailbox in mailboxes:
         out_root = OUTPUT_DIR / mailbox
@@ -490,7 +500,7 @@ def sync_queue(mailboxes, folders, since_min):
             if since_min and (date is None or date < since_min):
                 continue
             queue.append((date or datetime.min.replace(tzinfo=timezone.utc), mailbox, key, out_root / rel))
-    queue.sort(key=lambda item: item[0])
+    queue.sort(key=lambda item: item[0], reverse=True)
     return queue
 
 
@@ -507,6 +517,13 @@ def run_sync():
     except ValueError:
         log.error("SINCE invalide (attendu : AAAA-MM-JJ)")
         return 1
+    months = os.environ.get("SYNC_MONTHS", "").strip()
+    if months:
+        if not months.isdigit() or int(months) <= 0:
+            log.error("MONTHS invalide (attendu : un nombre de mois > 0)")
+            return 1
+        # Avec SINCE et MONTHS, la borne la plus récente l'emporte.
+        since_min = max(filter(None, (since_min, months_ago(int(months)))))
 
     known = sorted(p.name for p in OUTPUT_DIR.iterdir() if p.is_dir() and not p.name.startswith("."))
     unknown = [m for m in only if m not in known]
@@ -524,7 +541,9 @@ def run_sync():
         return 0
 
     names = ", ".join(sorted({mailbox for _, mailbox, _, _ in queue}))
-    telegram(f"📬 Synchro des mails : {fmt_count(total)} mail(s) à traiter ({names})")
+    period = f", depuis le {since_min:%d/%m/%Y}" if since_min else ""
+    telegram(f"📬 Synchro des mails : {fmt_count(total)} mail(s) à traiter{period} ({names}), "
+             "du plus récent au plus ancien")
     done = {m: load_json(OUTPUT_DIR / m / SYNC_FILE, []) for m in mailboxes}
     processed = errors = 0
     start = time.monotonic()

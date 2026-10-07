@@ -200,11 +200,12 @@ Mise en service : `make install` (génère le token et `mbsync/env/.env.mail2md`
 ### Envoyer les anciens mails
 
 ```bash
-make sync-mails                                   # tout le stock INBOX, toutes les boîtes
+make sync-mails MONTHS=3                          # INBOX des 3 derniers mois, toutes les boîtes
+make sync-mails                                   # tout le stock INBOX
 make sync-mails MAILBOX=escarrie_contact SINCE=2026-01-01 LIMIT=100 EVERY=10
 ```
 
-Les mails sont envoyés un par un (≈ 30 à 60 s chacun avec le LLM local), sans alerte « important ». Le suivi arrive sur Telegram : nombre de mails à traiter, progression tous les `EVERY` mails, puis « Queue terminée ». La synchro est reprenable : après un Ctrl-C ou une erreur, relance la même commande (mails déjà envoyés listés dans `.mail2md-sync.json`).
+Les mails sont envoyés un par un, **du plus récent au plus ancien** (≈ 30 à 60 s chacun avec le LLM local), sans alerte « important ». `LIMIT=N` traite donc les N plus récents ; `MONTHS=N` se limite aux N derniers mois (avec `SINCE`, la date la plus récente l'emporte). Le suivi arrive sur Telegram : nombre de mails à traiter, progression tous les `EVERY` mails, puis « Queue terminée ». La synchro est reprenable : après un Ctrl-C ou une erreur, relance la même commande (mails déjà envoyés listés dans `.mail2md-sync.json`).
 
 ## Sécurité
 
